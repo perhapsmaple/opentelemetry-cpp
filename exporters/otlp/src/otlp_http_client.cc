@@ -19,6 +19,10 @@
 #include "google/protobuf/stubs/common.h"
 #include "nlohmann/json.hpp"
 
+#include "rapidjson/document.h"
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
+
 #include "opentelemetry/exporters/otlp/protobuf_include_suffix.h"
 
 #include "opentelemetry/common/timestamp.h"
@@ -414,17 +418,20 @@ static std::string BytesMapping(const std::string &bytes,
   }
 }
 
-static void ConvertGenericFieldToJson(nlohmann::json &value,
+static void ConvertGenericFieldToJson(rapidjson::Value &value,
+                                      rapidjson::Document::AllocatorType &allocator,
                                       const google::protobuf::Message &message,
                                       const google::protobuf::FieldDescriptor *field_descriptor,
                                       const OtlpHttpClientOptions &options);
 
-static void ConvertListFieldToJson(nlohmann::json &value,
+static void ConvertListFieldToJson(rapidjson::Value &value,
+                                   rapidjson::Document::AllocatorType &allocator,
                                    const google::protobuf::Message &message,
                                    const google::protobuf::FieldDescriptor *field_descriptor,
                                    const OtlpHttpClientOptions &options);
 
-static void ConvertGenericMessageToJson(nlohmann::json &value,
+static void ConvertGenericMessageToJson(rapidjson::Value &value,
+                                        rapidjson::Document::AllocatorType &allocator,
                                         const google::protobuf::Message &message,
                                         const OtlpHttpClientOptions &options)
 {
@@ -433,16 +440,22 @@ static void ConvertGenericMessageToJson(nlohmann::json &value,
   for (std::size_t i = 0; i < fields_with_data.size(); ++i)
   {
     const google::protobuf::FieldDescriptor *field_descriptor = fields_with_data[i];
-    nlohmann::json &child_value = options.use_json_name ? value[field_descriptor->json_name()]
-                                                        : value[field_descriptor->camelcase_name()];
+
+    rapidjson::Value field_name = options.use_json_name ? rapidjson::Value(field_descriptor->json_name().c_str(), allocator)
+                                                        : rapidjson::Value(field_descriptor->camelcase_name().c_str(), allocator);
+
+    rapidjson::Value field_value(rapidjson::kObjectType);
+
     if (field_descriptor->is_repeated())
     {
-      ConvertListFieldToJson(child_value, message, field_descriptor, options);
+      ConvertListFieldToJson(field_value, allocator, message, field_descriptor, options);
     }
     else
     {
-      ConvertGenericFieldToJson(child_value, message, field_descriptor, options);
+      ConvertGenericFieldToJson(field_value, allocator, message, field_descriptor, options);
     }
+
+    value.AddMember(field_name, field_value, allocator);
   }
 }
 
@@ -458,7 +471,8 @@ bool SerializeToHttpBody(http_client::Body &output, const google::protobuf::Mess
   return true;
 }
 
-void ConvertGenericFieldToJson(nlohmann::json &value,
+void ConvertGenericFieldToJson(rapidjson::Value &value,
+                               rapidjson::Document::AllocatorType &allocator,
                                const google::protobuf::Message &message,
                                const google::protobuf::FieldDescriptor *field_descriptor,
                                const OtlpHttpClientOptions &options)
@@ -466,58 +480,63 @@ void ConvertGenericFieldToJson(nlohmann::json &value,
   switch (field_descriptor->cpp_type())
   {
     case google::protobuf::FieldDescriptor::CPPTYPE_INT32: {
-      value = message.GetReflection()->GetInt32(message, field_descriptor);
+      value.SetInt(message.GetReflection()->GetInt32(message, field_descriptor));
       break;
     }
     case google::protobuf::FieldDescriptor::CPPTYPE_INT64: {
       // According to Protobuf specs 64-bit integer numbers in JSON-encoded payloads are encoded as
       // decimal strings, and either numbers or strings are accepted when decoding.
-      value = std::to_string(message.GetReflection()->GetInt64(message, field_descriptor));
+      std::string field_value = std::to_string(message.GetReflection()->GetInt64(message, field_descriptor));
+      value.SetString(field_value.c_str(), static_cast<rapidjson::SizeType>(field_value.length()), allocator);
       break;
     }
     case google::protobuf::FieldDescriptor::CPPTYPE_UINT32: {
-      value = message.GetReflection()->GetUInt32(message, field_descriptor);
+      value.SetUint(message.GetReflection()->GetUInt32(message, field_descriptor));
       break;
     }
     case google::protobuf::FieldDescriptor::CPPTYPE_UINT64: {
       // According to Protobuf specs 64-bit integer numbers in JSON-encoded payloads are encoded as
       // decimal strings, and either numbers or strings are accepted when decoding.
-      value = std::to_string(message.GetReflection()->GetUInt64(message, field_descriptor));
+      std::string field_value = std::to_string(message.GetReflection()->GetUInt64(message, field_descriptor));
+      value.SetString(field_value.c_str(), static_cast<rapidjson::SizeType>(field_value.length()), allocator);
       break;
     }
     case google::protobuf::FieldDescriptor::CPPTYPE_STRING: {
       std::string empty;
       if (field_descriptor->type() == google::protobuf::FieldDescriptor::TYPE_BYTES)
       {
-        value = BytesMapping(
-            message.GetReflection()->GetStringReference(message, field_descriptor, &empty),
-            field_descriptor, options.json_bytes_mapping);
+        std::string field_value = BytesMapping(
+          message.GetReflection()->GetString(message, field_descriptor),
+          field_descriptor, options.json_bytes_mapping);
+        value.SetString(field_value.c_str(), static_cast<rapidjson::SizeType>(field_value.length()), allocator);
       }
       else
       {
-        value = message.GetReflection()->GetStringReference(message, field_descriptor, &empty);
+        std::string field_value = message.GetReflection()->GetString(message, field_descriptor);
+        value.SetString(field_value.c_str(), static_cast<rapidjson::SizeType>(field_value.length()), allocator);
+      break;
       }
       break;
     }
     case google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE: {
       ConvertGenericMessageToJson(
-          value, message.GetReflection()->GetMessage(message, field_descriptor, nullptr), options);
+          value, allocator, message.GetReflection()->GetMessage(message, field_descriptor, nullptr), options);
       break;
     }
     case google::protobuf::FieldDescriptor::CPPTYPE_DOUBLE: {
-      value = message.GetReflection()->GetDouble(message, field_descriptor);
+      value.SetDouble(message.GetReflection()->GetDouble(message, field_descriptor));
       break;
     }
     case google::protobuf::FieldDescriptor::CPPTYPE_FLOAT: {
-      value = message.GetReflection()->GetFloat(message, field_descriptor);
+      value.SetFloat(message.GetReflection()->GetFloat(message, field_descriptor));
       break;
     }
     case google::protobuf::FieldDescriptor::CPPTYPE_BOOL: {
-      value = message.GetReflection()->GetBool(message, field_descriptor);
+      value.SetBool(message.GetReflection()->GetBool(message, field_descriptor));
       break;
     }
     case google::protobuf::FieldDescriptor::CPPTYPE_ENUM: {
-      value = message.GetReflection()->GetEnumValue(message, field_descriptor);
+      value.SetInt(message.GetReflection()->GetEnumValue(message, field_descriptor));
       break;
     }
     default: {
@@ -526,11 +545,13 @@ void ConvertGenericFieldToJson(nlohmann::json &value,
   }
 }
 
-void ConvertListFieldToJson(nlohmann::json &value,
+void ConvertListFieldToJson(rapidjson::Value &value,
+                            rapidjson::Document::AllocatorType& allocator,
                             const google::protobuf::Message &message,
                             const google::protobuf::FieldDescriptor *field_descriptor,
                             const OtlpHttpClientOptions &options)
 {
+  value.SetArray();
   auto field_size = message.GetReflection()->FieldSize(message, field_descriptor);
 
   switch (field_descriptor->cpp_type())
@@ -538,7 +559,9 @@ void ConvertListFieldToJson(nlohmann::json &value,
     case google::protobuf::FieldDescriptor::CPPTYPE_INT32: {
       for (int i = 0; i < field_size; ++i)
       {
-        value.push_back(message.GetReflection()->GetRepeatedInt32(message, field_descriptor, i));
+        rapidjson::Value v;
+        v.SetInt(message.GetReflection()->GetRepeatedInt32(message, field_descriptor, i));
+        value.PushBack(v, allocator);
       }
 
       break;
@@ -548,8 +571,11 @@ void ConvertListFieldToJson(nlohmann::json &value,
       {
         // According to Protobuf specs 64-bit integer numbers in JSON-encoded payloads are encoded
         // as decimal strings, and either numbers or strings are accepted when decoding.
-        value.push_back(std::to_string(
-            message.GetReflection()->GetRepeatedInt64(message, field_descriptor, i)));
+        rapidjson::Value v;
+        std::string field_value = std::to_string(
+            message.GetReflection()->GetRepeatedInt64(message, field_descriptor, i));
+        v.SetString(field_value.c_str(), static_cast<rapidjson::SizeType>(field_value.length()), allocator);
+        value.PushBack(v, allocator);
       }
 
       break;
@@ -557,7 +583,9 @@ void ConvertListFieldToJson(nlohmann::json &value,
     case google::protobuf::FieldDescriptor::CPPTYPE_UINT32: {
       for (int i = 0; i < field_size; ++i)
       {
-        value.push_back(message.GetReflection()->GetRepeatedUInt32(message, field_descriptor, i));
+        rapidjson::Value v;
+        v.SetUint(message.GetReflection()->GetRepeatedUInt32(message, field_descriptor, i));
+        value.PushBack(v, allocator);
       }
 
       break;
@@ -567,8 +595,11 @@ void ConvertListFieldToJson(nlohmann::json &value,
       {
         // According to Protobuf specs 64-bit integer numbers in JSON-encoded payloads are encoded
         // as decimal strings, and either numbers or strings are accepted when decoding.
-        value.push_back(std::to_string(
-            message.GetReflection()->GetRepeatedUInt64(message, field_descriptor, i)));
+        rapidjson::Value v;
+        std::string field_value = std::to_string(
+            message.GetReflection()->GetRepeatedUInt64(message, field_descriptor, i));
+        v.SetString(field_value.c_str(), static_cast<rapidjson::SizeType>(field_value.length()), allocator);
+        value.PushBack(v, allocator);
       }
 
       break;
@@ -579,17 +610,22 @@ void ConvertListFieldToJson(nlohmann::json &value,
       {
         for (int i = 0; i < field_size; ++i)
         {
-          value.push_back(BytesMapping(message.GetReflection()->GetRepeatedStringReference(
-                                           message, field_descriptor, i, &empty),
-                                       field_descriptor, options.json_bytes_mapping));
+          rapidjson::Value v;
+          std::string field_value = BytesMapping(message.GetReflection()->GetRepeatedString(
+                                          message, field_descriptor, i),
+                                          field_descriptor, options.json_bytes_mapping);
+          v.SetString(field_value.c_str(), static_cast<rapidjson::SizeType>(field_value.length()), allocator);
+          value.PushBack(v, allocator);
         }
       }
       else
       {
         for (int i = 0; i < field_size; ++i)
         {
-          value.push_back(message.GetReflection()->GetRepeatedStringReference(
-              message, field_descriptor, i, &empty));
+          rapidjson::Value v;
+          std::string field_value = message.GetReflection()->GetRepeatedString(message, field_descriptor, i);
+          v.SetString(field_value.c_str(), static_cast<rapidjson::SizeType>(field_value.length()), allocator);
+          value.PushBack(v, allocator);
         }
       }
       break;
@@ -597,11 +633,11 @@ void ConvertListFieldToJson(nlohmann::json &value,
     case google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE: {
       for (int i = 0; i < field_size; ++i)
       {
-        nlohmann::json sub_value;
+        rapidjson::Value sub_value(rapidjson::kObjectType);
         ConvertGenericMessageToJson(
-            sub_value, message.GetReflection()->GetRepeatedMessage(message, field_descriptor, i),
+            sub_value, allocator, message.GetReflection()->GetRepeatedMessage(message, field_descriptor, i),
             options);
-        value.push_back(std::move(sub_value));
+        value.PushBack(sub_value, allocator);
       }
 
       break;
@@ -609,7 +645,9 @@ void ConvertListFieldToJson(nlohmann::json &value,
     case google::protobuf::FieldDescriptor::CPPTYPE_DOUBLE: {
       for (int i = 0; i < field_size; ++i)
       {
-        value.push_back(message.GetReflection()->GetRepeatedDouble(message, field_descriptor, i));
+        rapidjson::Value v;
+        v.SetDouble(message.GetReflection()->GetRepeatedDouble(message, field_descriptor, i));
+        value.PushBack(v, allocator);
       }
 
       break;
@@ -617,7 +655,9 @@ void ConvertListFieldToJson(nlohmann::json &value,
     case google::protobuf::FieldDescriptor::CPPTYPE_FLOAT: {
       for (int i = 0; i < field_size; ++i)
       {
-        value.push_back(message.GetReflection()->GetRepeatedFloat(message, field_descriptor, i));
+        rapidjson::Value v;
+        v.SetFloat(message.GetReflection()->GetRepeatedFloat(message, field_descriptor, i));
+        value.PushBack(v, allocator);
       }
 
       break;
@@ -625,7 +665,9 @@ void ConvertListFieldToJson(nlohmann::json &value,
     case google::protobuf::FieldDescriptor::CPPTYPE_BOOL: {
       for (int i = 0; i < field_size; ++i)
       {
-        value.push_back(message.GetReflection()->GetRepeatedBool(message, field_descriptor, i));
+        rapidjson::Value v;
+        v.SetBool(message.GetReflection()->GetRepeatedBool(message, field_descriptor, i));
+        value.PushBack(v, allocator);
       }
 
       break;
@@ -633,8 +675,9 @@ void ConvertListFieldToJson(nlohmann::json &value,
     case google::protobuf::FieldDescriptor::CPPTYPE_ENUM: {
       for (int i = 0; i < field_size; ++i)
       {
-        value.push_back(
-            message.GetReflection()->GetRepeatedEnumValue(message, field_descriptor, i));
+        rapidjson::Value v;
+        v.SetInt(message.GetReflection()->GetRepeatedEnumValue(message, field_descriptor, i));
+        value.PushBack(v, allocator);
       }
       break;
     }
@@ -913,13 +956,17 @@ OtlpHttpClient::createSession(
   }
   else
   {
-    nlohmann::json json_request;
+    rapidjson::Document json_request;
+    json_request.SetObject();
 
     // Convert from proto into json object
-    ConvertGenericMessageToJson(json_request, message, options_);
+    ConvertGenericMessageToJson(json_request, json_request.GetAllocator(), message, options_);
 
-    std::string post_body_json =
-        json_request.dump(-1, ' ', false, nlohmann::detail::error_handler_t::replace);
+    rapidjson::StringBuffer buffer;
+    rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+    json_request.Accept(writer);
+
+    std::string post_body_json = buffer.GetString();
     if (options_.console_debug)
     {
       OTEL_INTERNAL_LOG_DEBUG("[OTLP HTTP Client] Request body(Json)" << post_body_json);
