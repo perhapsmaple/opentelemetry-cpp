@@ -135,6 +135,44 @@ void AdaptingCircularBufferCounter::Clear()
   backing_.Clear();
 }
 
+void AdaptingCircularBufferCounter::Downscale(uint32_t by)
+{
+  if (by == 0 || Empty())
+  {
+    return;
+  }
+
+  std::vector<std::pair<int32_t, uint64_t>> merged;
+  merged.reserve(static_cast<size_t>(end_index_ - start_index_ + 1));
+
+  for (int32_t i = start_index_; i <= end_index_; ++i)
+  {
+    const uint64_t count = Get(i);
+    if (count == 0)
+    {
+      continue;
+    }
+    const int32_t new_index = i >> by;
+    if (!merged.empty() && merged.back().first == new_index)
+    {
+      merged.back().second += count;
+    }
+    else
+    {
+      merged.emplace_back(new_index, count);
+    }
+  }
+
+  // Clear resets indices to sentinel and zeros backing storage in-place.
+  Clear();
+
+  // Reinsert merged buckets. The range is guaranteed to fit within MaxSize().
+  for (const auto &entry : merged)
+  {
+    Increment(entry.first, entry.second);
+  }
+}
+
 bool AdaptingCircularBufferCounter::Increment(int32_t index, uint64_t delta)
 {
   if (Empty())

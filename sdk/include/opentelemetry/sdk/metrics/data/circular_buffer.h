@@ -124,6 +124,16 @@ public:
   void Clear();
 
   /**
+   * Downscale bucket indices in-place by the given amount.
+   *
+   * Each populated bucket at index i is merged into the bucket at index (i >> by).
+   * This avoids allocating a new buffer, reusing the existing backing storage.
+   *
+   * @param by The number of bits to shift indices right.
+   */
+  void Downscale(uint32_t by);
+
+  /**
    * Persist new data at index, incrementing by delta amount.
    *
    * @param index The index of where to perform the incrementation.

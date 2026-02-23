@@ -43,27 +43,10 @@ uint32_t GetScaleReduction(int32_t start_index, int32_t end_index, size_t max_bu
 
 void DownscaleBuckets(std::unique_ptr<AdaptingCircularBufferCounter> &buckets, uint32_t by) noexcept
 {
-  if (buckets->Empty())
+  if (buckets)
   {
-    return;
+    buckets->Downscale(by);
   }
-
-  // We want to preserve other optimisations here as well, e.g. integer size.
-  // Instead of creating a new counter, we copy the existing one (for bucket size
-  // optimisations), and clear the values before writing the new ones.
-  // TODO(euroelessar): Do downscaling in-place.
-  auto new_buckets = std::make_unique<AdaptingCircularBufferCounter>(buckets->MaxSize());
-  new_buckets->Clear();
-
-  for (auto i = buckets->StartIndex(); i <= buckets->EndIndex(); ++i)
-  {
-    const uint64_t count = buckets->Get(i);
-    if (count > 0)
-    {
-      new_buckets->Increment(i >> by, count);
-    }
-  }
-  buckets = std::move(new_buckets);
 }
 
 }  // namespace
